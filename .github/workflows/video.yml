@@ -1,19 +1,181 @@
-name: vps
+import time
 
-# Controls when the workflow will run
-on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
-  workflow_dispatch:
+import requests
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+import subprocess
 
-      - name: Run VPS
-        run: curl -sSf https://sshx.io/get | sh -s run
+import json
+
+# ثوابت التوكنات ومعرفات فيسبوك
+
+FACEBOOK_PAGE_ID = "1180694563792965"  # صفحة البث
+
+POST_ID = "102529882647595_674030902155698"  # منشور النشر
+
+ACCESS_TOKEN_STREAM = "EAAEqgm5szHsBO3dooj0Bme4kPfrqalDbAP1M13lBUSuFG18cs1JqRZAmUVhEz7ZBmiEtoEEVihYYdWDXWaDwblSBdK9ZBWcFgsThQTo3FfCnqCLcf81QPtslZBqfT40aIKzcqlVkErSNZAist6LJYwDuoz04Fu0hYbmR8dogSl7zU7nH7ZCh81wbmfqalr"  # توكن إنشاء وتشغيل البث
+
+ACCESS_TOKEN_PUBLISH = "EAAEqgm5szHsBOy4HKwAjUCR8pyJ3FbRO0kvXmX1igEXBAfsoyej6wmZANRHeTGZCv4gh9Q2t6c4S2ODGWmRhe6JkOrNviRSP8GNLRBjXzpMMFm639itQcdvRzenvOlOx22f83OyCZA6a0TpHZAXoF46fknc88JQtSubGoVMIxd4ZABrLXPpQzo49S8REZD"  # توكن نشر رسالة الرابط على المنشور
+
+CHANNEL_NAME = "BeIN SPORT 1"
+
+M3U8_URL = "https://shls-live-enc.edgenextcdn.net/out/v1/46079e838e65490c8299f902a7731168/index.m3u8"
+
+def create_live_video():
+
+    """ ينشئ بث مباشر جديد ويرجع بيانات البث """
+
+    url = f"https://graph.facebook.com/v16.0/{FACEBOOK_PAGE_ID}/live_videos"
+
+    params = {
+
+        "access_token": ACCESS_TOKEN_STREAM,
+
+        "title": "بث مباشر من بوت",
+
+        "description": "بث مباشر من رابط m3u8",
+
+        "status": "UNPUBLISHED"
+
+    }
+
+    resp = requests.post(url, params=params)
+
+    data = resp.json()
+
+    if "id" in data and "stream_url" in data:
+
+        return data["id"], data["stream_url"]
+
+    else:
+
+        print("خطأ في إنشاء البث:", data)
+
+        return None, None
+
+def start_ffmpeg(stream_url):
+
+    """ يبدأ ffmpeg لعمل بث من m3u8 إلى stream_url """
+
+    cmd = [
+
+        "ffmpeg",
+
+        "-re",
+
+        "-i", M3U8_URL,
+
+        "-c:v", "copy",
+
+        "-c:a", "aac",
+
+        "-f", "flv",
+
+        stream_url
+
+    ]
+
+    # تشغيل ffmpeg في الخلفية
+
+    return subprocess.Popen(cmd)
+
+def get_dash_preview_url(live_video_id):
+
+    """ يجلب رابط mpd dash من بيانات البث """
+
+    url = f"https://graph.facebook.com/v16.0/{live_video_id}"
+
+    params = {
+
+        "access_token": ACCESS_TOKEN_STREAM,
+
+        "fields": "dash_preview_url"
+
+    }
+
+    resp = requests.get(url, params=params)
+
+    data = resp.json()
+
+    return data.get("dash_preview_url")
+
+def publish_mpd_url(mpd_url):
+
+    """ ينشر رابط mpd dash في منشور فيسبوك """
+
+    map_data = []
+
+    map_data.append({
+
+        "name": CHANNEL_NAME,
+
+        "M3U8": mpd_url
+
+    })
+
+    message_json = json.dumps(map_data)
+
+    url = f"https://graph.facebook.com/{POST_ID}"
+
+    params = {
+
+        "access_token": ACCESS_TOKEN_PUBLISH,
+
+        "message": message_json
+
+    }
+
+    resp = requests.post(url, params=params)
+
+    print("نشر فيسبوك:", resp.json())
+
+def main_loop():
+
+    while True:
+
+        print("إنشاء بث مباشر جديد...")
+
+        live_video_id, stream_url = create_live_video()
+
+        if not live_video_id:
+
+            print("فشل في إنشاء البث، إعادة المحاولة بعد دقيقة...")
+
+            time.sleep(60)
+
+            continue
+
+        print("بدء البث عبر ffmpeg...")
+
+        process = start_ffmpeg(stream_url)
+
+        # انتظر 30 ثانية لتثبيت البث وجلب رابط mpd
+
+        time.sleep(30)
+
+        dash_url = get_dash_preview_url(live_video_id)
+
+        if dash_url:
+
+            print("رابط mpd dash:", dash_url)
+
+            publish_mpd_url(dash_url)
+
+        else:
+
+            print("لم أستطع جلب رابط mpd dash")
+
+        # استمر في البث لمدة 4 ساعات (14400 ثانية)
+
+        print("البث مستمر 4 ساعات...")
+
+        time.sleep(14400)
+
+        # انهاء ffmpeg لإعادة التشغيل
+
+        process.terminate()
+
+        print("تم إيقاف البث، سيتم إعادة التشغيل الآن.")
+
+if __name__ == "__main__":
+
+    main_loop()
